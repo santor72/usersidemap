@@ -1,5 +1,8 @@
 # Map API v1
 
+For partner integrations that need distances to network infrastructure, see the
+[partner network lookup API](network-nearby-api.md).
+
 The API reads immutable published datasets from PostGIS and does not connect to
 Userside. Start it with `uv run --project backend map-api`; set
 `MAP_API_DATABASE_URL` to the restricted API database role (it falls back to

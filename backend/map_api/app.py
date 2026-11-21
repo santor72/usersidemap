@@ -22,6 +22,7 @@ from map_render.cables import cable_type_sql, layer_filter_sql, visible_sql
 
 from .batching import BatchPacker
 from .cable_details import cable_endpoint_names
+from .network_nearby import install_network_nearby
 from .providers import PROVIDERS
 from .tile_auth import authorize
 from .tile_routes import install_tile_routes
@@ -87,19 +88,26 @@ def error(status, code, message):
     raise HTTPException(status, detail={"code": code, "message": message})
 
 
-def create_app(pool=None, settings=None):
-    settings = settings or {}
-    cable_type_ids = settings.get(
-        "visible_cable_type_ids", env_setting("MAP_API_VISIBLE_CABLE_TYPE_IDS", "1")
-    )
+def configured_cable_types(settings, key, env_key):
+    cable_type_ids = settings.get(key, env_setting(env_key, "1"))
     if isinstance(cable_type_ids, str):
         cable_type_ids = [
             int(value.strip()) for value in cable_type_ids.split(",") if value.strip()
         ]
     cable_type_ids = [int(value) for value in cable_type_ids]
     if any(value <= 0 for value in cable_type_ids):
-        raise ValueError("MAP_API_VISIBLE_CABLE_TYPE_IDS must contain positive IDs")
-    cable_type_ids = [str(value) for value in dict.fromkeys(cable_type_ids)]
+        raise ValueError(f"{env_key} must contain positive IDs")
+    return [str(value) for value in dict.fromkeys(cable_type_ids)]
+
+
+def create_app(pool=None, settings=None):
+    settings = settings or {}
+    cable_type_ids = configured_cable_types(
+        settings, "visible_cable_type_ids", "MAP_API_VISIBLE_CABLE_TYPE_IDS"
+    )
+    network_cable_type_ids = configured_cable_types(
+        settings, "network_cable_type_ids", "MAP_API_NETWORK_CABLE_TYPE_IDS"
+    )
     dsn = (
         settings.get("database_url")
         or env_setting("MAP_API_DATABASE_URL", "")
@@ -624,6 +632,12 @@ def create_app(pool=None, settings=None):
             }
 
     install_tile_routes(app, settings, set_timeouts)
+    install_network_nearby(
+        app,
+        settings.get("source_system", env_setting("MAP_API_SOURCE_SYSTEM", "userside")),
+        network_cable_type_ids,
+        set_timeouts,
+    )
     return app
 
 

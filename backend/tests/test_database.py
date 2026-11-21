@@ -1,8 +1,10 @@
 """Integration tests use a disposable target DB, never US_DB_* credentials."""
 
+import asyncio
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from uuid import UUID, uuid4
 
 import psycopg
@@ -12,6 +14,8 @@ from psycopg import sql
 from psycopg.rows import dict_row
 
 from map_api.app import create_app
+from map_api.network_nearby import NEAREST_SQL
+from map_api.tile_auth import issue_token
 from map_sync.config import Config, SyncError
 from map_sync.migrate import migrate
 from map_sync.sync import cleanup, synchronize
@@ -102,6 +106,241 @@ def active(conn, config):
         "SELECT dataset_id FROM map_data.active_datasets WHERE source_system=%s",
         (config.source_system,),
     ).fetchone()["dataset_id"]
+
+
+def test_partner_nearby_modes_geometry_and_authorization(databases):
+    source, target, config = databases
+    source.execute(
+        """INSERT INTO userside3.pbl_cable_line_type VALUES (3,'UTP',0,'ed008c','ed008c',1,1);
+        INSERT INTO userside3.pbl_optica VALUES
+          (11,1,2,0,1,0,0,8,0,1,'','hidden',100,100),
+          (12,1,2,0,3,0,0,8,0,0,'','excluded type',100,100),
+          (13,1,2,0,1,0,0,8,1,0,'','planned',100,100);
+        INSERT INTO userside3.pbl_uzel
+          (code,node_type_id,parentuzel,nazv,codenumber,location,isplan,mapmarkcode,coord)
+        VALUES (4,4,1,'co-located','4','',0,0,NULL),
+               (5,4,1,'co-located','5','',0,0,NULL),
+               (6,4,1,'planned','6','',1,0,NULL),
+               (7,4,1,'co-located','7','',0,0,NULL),
+               (20,1,0,'boundary','20','',0,0,ST_Point(55,37.02));""",
+        prepare=False,
+    )
+    version = synchronize(config, progress=quiet)["datasetId"]
+    partner = issue_token(target, "partner", [3], ["network:nearby"], 600)
+    token = partner["token"]
+    map_token = issue_token(target, "tiles", [3, 9], ["metadata"], 600)["token"]
+    missing_map = issue_token(target, "unpublished", [9], ["network:nearby"], 600)["token"]
+    with pytest.raises(ValueError, match="exactly one map"):
+        issue_token(target, "multi-map", [3, 9], ["network:nearby"], 600)
+    app = create_app(
+        settings={"database_url": config.target_url, "source_system": config.source_system}
+    )
+    path = "/api/network/nearby"
+    headers = {"Authorization": f"Bearer {token}"}
+    near_cable = {"longitude": 37.003, "latitude": 55.003, "radiusM": 0.01}
+    with TestClient(app) as client:
+        contract = client.get("/openapi.json").json()["paths"][path]["post"]
+        assert contract["security"] == [{"NetworkPartnerToken": []}]
+        assert client.post(path, json=near_cable).status_code == 401
+        assert (
+            client.post(
+                path, json=near_cable, headers={"Cookie": f"map_tiles_session={token}"}
+            ).status_code
+            == 401
+        )
+        assert (
+            client.post(
+                path, json=near_cable, headers={"Authorization": f"Bearer {map_token}"}
+            ).status_code
+            == 403
+        )
+        for invalid in (
+            {"longitude": 181},
+            {"latitude": -91},
+            {"radiusM": -1},
+            {"radiusM": True},
+            {"radiusM": "100"},
+            {"mapId": 9},
+        ):
+            response = client.post(path, json=near_cable | invalid, headers=headers)
+            assert response.status_code == 422
+            assert response.json()["error"]["code"] == "INVALID_REQUEST"
+        response = client.post(
+            path, json=near_cable, headers={"Authorization": f"Bearer {missing_map}"}
+        )
+        assert response.status_code == 503
+        assert response.json()["error"]["code"] == "NO_ACTIVE_DATASET"
+
+        response = client.post(path, json=near_cable, headers=headers)
+        assert response.status_code == 200, response.text
+        primary = response.json()
+        alternatives = primary.pop("alternatives")
+        assert primary == {
+            "mapId": 3,
+            "datasetVersion": version,
+            "radiusM": 0.01,
+            "searchMode": "within_radius",
+            "cables": [{"objectId": "cable:10", "distanceM": 0.0}],
+            "nodes": [],
+            "couplers": [],
+        }
+        result = alternatives
+        assert [obj["objectId"] for obj in result["nodes"]] == ["node:1", "node:3"]
+        assert [obj["objectId"] for obj in result["couplers"]] == ["node:2", "node:20"]
+        assert result["nodes"][0]["connectedCables"] == [{"cableId": "cable:10"}]
+        assert result["nodes"][1]["connectedCables"] == []
+        assert result["couplers"][0]["connectedCables"] == [{"cableId": "cable:10"}]
+        assert not any(item["withinRadius"] for group in result.values() for item in group)
+        assert response.headers["Cache-Control"] == "no-store"
+
+        response = client.post(path, json=near_cable | {"radiusM": 0}, headers=headers)
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result["searchMode"] == "nearest"
+        assert result["radiusM"] == 0
+        assert result["cables"] == [{"objectId": "cable:10", "distanceM": 0.0}]
+        assert result["nodes"][0]["distanceM"] > 0
+        assert result["couplers"][0]["distanceM"] > 0
+        assert result["couplers"][0]["connectedCables"] == [{"cableId": "cable:10"}]
+        assert len(result["alternatives"]["nodes"]) == 2
+
+        at_node = {"longitude": 37, "latitude": 55, "radiusM": 1}
+        result = client.post(path, json=at_node, headers=headers).json()
+        assert [obj["objectId"] for obj in result["nodes"]] == ["node:1", "node:3", "node:4"]
+        assert result["alternatives"]["nodes"] == [
+            {
+                "objectId": f"node:{node_id}",
+                "distanceM": 0.0,
+                "withinRadius": True,
+                "connectedCables": [],
+            }
+            for node_id in (5, 7)
+        ]
+        unbounded = client.post(path, json=at_node | {"radiusM": 0}, headers=headers).json()
+        assert unbounded["searchMode"] == "nearest"
+        assert unbounded["alternatives"]["nodes"] == result["alternatives"]["nodes"]
+
+        edge = target.execute(
+            """SELECT ST_Distance(
+                geom::geography, 'SRID=4326;POINT(37.019992 55)'::geography
+            ) AS radius FROM map_data.features WHERE dataset_id=%s AND source_id=20""",
+            (version,),
+        ).fetchone()["radius"]
+        edge_query = {"longitude": 37.019992, "latitude": 55, "radiusM": edge}
+        result = client.post(path, json=edge_query, headers=headers).json()
+        assert result["searchMode"] == "within_radius"
+        assert result["couplers"] == [
+            {"objectId": "node:20", "distanceM": edge, "connectedCables": []}
+        ]
+        assert [obj["objectId"] for obj in result["alternatives"]["couplers"]] == ["node:2"]
+        result = client.post(
+            path, json=edge_query | {"radiusM": edge - 0.001}, headers=headers
+        ).json()
+        assert result["searchMode"] == "nearest_outside_radius"
+
+        far = {"longitude": 37, "latitude": 54, "radiusM": 300}
+        response = client.post(path, json=far, headers=headers)
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result["searchMode"] == "nearest_outside_radius"
+        assert [obj["objectId"] for obj in result["nodes"]] == ["node:1", "node:3", "node:4"]
+        assert [obj["objectId"] for obj in result["cables"]] == ["cable:10"]
+        assert {obj["objectId"] for obj in result["couplers"]} == {"node:2", "node:20"}
+        assert [obj["objectId"] for obj in result["alternatives"]["nodes"]] == ["node:5", "node:7"]
+        assert result["alternatives"]["couplers"] == []
+        assert result["nodes"][0]["connectedCables"] == [{"cableId": "cable:10"}]
+        for key in ("nodes", "cables", "couplers"):
+            distances = [obj["distanceM"] for obj in result[key]]
+            assert distances == sorted(distances)
+            assert all(value > far["radiusM"] for value in distances)
+
+        source.execute(
+            """INSERT INTO userside3.pbl_optica_mag VALUES (100,'test group');
+            INSERT INTO userside3.pbl_optica VALUES
+              (14,20,7,0,1,0,0,8,0,0,'','another group member',100,100);
+            INSERT INTO userside3.pbl_optica_mag_inc
+              VALUES (1,10,100),(2,11,100),(3,13,100),(4,14,100);""",
+            prepare=False,
+        )
+        version = synchronize(config, progress=quiet)["datasetId"]
+        result = client.post(path, json=near_cable, headers=headers).json()
+        assert result["datasetVersion"] == version
+        assert result["cables"] == [{"objectId": "cable_group:100", "distanceM": 0.0}]
+        connected_group = [{"cableId": "cable:10", "groupId": "cable_group:100"}]
+        assert result["alternatives"]["nodes"][0]["connectedCables"] == connected_group
+        assert result["alternatives"]["couplers"][0]["connectedCables"] == connected_group
+        assert result["alternatives"]["couplers"][1]["connectedCables"] == [
+            {"cableId": "cable:14", "groupId": "cable_group:100"}
+        ]
+        result = client.post(path, json=at_node, headers=headers).json()
+        assert result["nodes"][0]["connectedCables"] == connected_group
+
+        source.execute("UPDATE userside3.pbl_uzel SET isplan=1")
+        source.execute("UPDATE userside3.pbl_optica SET ishide=1")
+        version = synchronize(config, progress=quiet)["datasetId"]
+        result = client.post(path, json=near_cable, headers=headers).json()
+        assert result == {
+            "mapId": 3,
+            "datasetVersion": version,
+            "radiusM": 0.01,
+            "searchMode": "empty",
+            "cables": [],
+            "nodes": [],
+            "couplers": [],
+            "alternatives": {"nodes": [], "couplers": []},
+        }
+        response = client.post(path, json=near_cable | {"radiusM": 0}, headers=headers)
+        assert response.status_code == 200, response.text
+        assert response.json() == result | {"radiusM": 0}
+        target.execute(
+            "UPDATE map_data.api_tokens SET revoked_at=now() WHERE id=%s", (partner["id"],)
+        )
+        assert client.post(path, json=near_cable, headers=headers).status_code == 401
+
+
+def test_partner_nearby_pins_snapshot_through_fallback(databases, monkeypatch):
+    source, target, config = databases
+    initial = synchronize(config, progress=quiet)["datasetId"]
+    token = issue_token(target, "partner", [3], ["network:nearby"], 600)["token"]
+    app = create_app(
+        settings={"database_url": config.target_url, "source_system": config.source_system}
+    )
+    fallback_started = threading.Event()
+    resume_fallback = threading.Event()
+    execute = psycopg.AsyncConnection.execute
+
+    async def pause_at_fallback(conn, query, *args, **kwargs):
+        if query == NEAREST_SQL:
+            fallback_started.set()
+            assert await asyncio.to_thread(resume_fallback.wait, 10)
+        return await execute(conn, query, *args, **kwargs)
+
+    monkeypatch.setattr(psycopg.AsyncConnection, "execute", pause_at_fallback)
+    headers = {"Authorization": f"Bearer {token}"}
+    far = {"longitude": 37, "latitude": 54, "radiusM": 300}
+    with TestClient(app) as client, ThreadPoolExecutor() as executor:
+        pending = executor.submit(client.post, "/api/network/nearby", json=far, headers=headers)
+        try:
+            assert fallback_started.wait(5)
+            source.execute("UPDATE userside3.pbl_uzel SET coord=ST_Point(54,37) WHERE code=1")
+            # Publishing updates the active pointer. Check its row lock while fallback is paused.
+            with target.transaction():
+                target.execute("SET LOCAL lock_timeout='100ms'")
+                with pytest.raises(psycopg.errors.LockNotAvailable):
+                    target.execute(
+                        "SELECT 1 FROM map_data.active_datasets WHERE dataset_id=%s FOR NO KEY UPDATE",
+                        (initial,),
+                    )
+        finally:
+            resume_fallback.set()
+        first = pending.result(timeout=5)
+        assert first.status_code == 200, first.text
+        assert first.json()["datasetVersion"] == initial
+        assert first.json()["searchMode"] == "nearest_outside_radius"
+        published = synchronize(config, progress=quiet)["datasetId"]
+        second = client.post("/api/network/nearby", json=far, headers=headers)
+        assert second.json()["datasetVersion"] == published
+        assert second.json()["searchMode"] == "within_radius"
 
 
 def test_migrate_repeat_sync_deletions_and_failed_publication(databases):

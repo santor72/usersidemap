@@ -89,7 +89,9 @@ def assemble_group(store, geometry, styles, row, *, error_policy="bridge", on_is
             issue(member_id, ObjectError("missing_cable_type", "Cable type is absent"))
             detail["status"] = "dropped"
             continue
-        if member.get("ishide") != 1 and cable_type.get("is_on_map") == 1:
+        detail["hidden"] = member.get("ishide") == 1 or cable_type.get("is_on_map") != 1
+        detail["planned"] = member.get("isplan") == 1
+        if not detail["hidden"]:
             visible.append(member)
         # Even failed custom routes may have known endpoints for a straight replacement.
         for kind, endpoint_id in endpoints(member):

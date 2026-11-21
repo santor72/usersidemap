@@ -10,7 +10,7 @@ import psycopg
 from dotenv import dotenv_values
 from psycopg.rows import dict_row
 
-from .tile_auth import issue_token
+from .tile_auth import TOKEN_SCOPES, issue_token
 
 
 def main(argv=None):
@@ -20,7 +20,7 @@ def main(argv=None):
     create = commands.add_parser("create")
     create.add_argument("--name", required=True)
     create.add_argument("--map", type=int, action="append", required=True)
-    create.add_argument("--scope", choices=["metadata", "details"], action="append", required=True)
+    create.add_argument("--scope", choices=TOKEN_SCOPES, action="append", required=True)
     create.add_argument("--ttl-seconds", type=int, default=2592000)
     revoke = commands.add_parser("revoke")
     revoke.add_argument("--id", required=True)
