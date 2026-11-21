@@ -1,0 +1,69 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Контрольный прототип кабельных тайлов</title>
+<link rel="stylesheet" href="/maplibre.css">
+<style>
+  body { margin:0; font:14px system-ui; color:#17334c; background:#f1f5f8; }
+  header {padding:12px 16px;background:white;border-bottom:1px solid #d4e0e8}
+  .maps {display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:8px}
+  article {background:white;border:1px solid #cedbe5;border-radius:5px;overflow:hidden}
+  h2 {font-size:16px;margin:10px 12px} .map {height:420px}
+  #status {margin-left:20px} button {margin-left:10px} p {margin:8px 16px}
+</style>
+<header>Контрольные трассы · один snapshot <button id="native">Native z14</button><button id="overzoom">Короткий кабель z18</button><button id="theme">Тематика 1</button><span id="status">Загрузка…</span></header>
+<div class="maps"><article><h2>Объекты (none)</h2><div id="none" class="map"></div></article><article><h2>Vector · solid / dashed</h2><div id="vector" class="map"></div></article><article><h2>Raster · solid · 1x / @2x</h2><div id="raster" class="map"></div></article></div>
+<p>Кабели под фиолетовым узлом. Raster не фильтруется по тематике. Выше native используются только запечённые родительские тайлы.</p>
+<script type="module">
+import * as maplibregl from '/maplibre.js'
+import { cableLayers, cableTileLayers } from '/cable-style.js'
+const [metadata,objects,points]=await Promise.all(['/metadata.json','/objects.json','/points.json'].map(url=>fetch(url).then(r=>r.json())))
+const maps={}, errors=[]; let layerIds=[]
+const thematic=()=>layerIds.length?['any',...layerIds.map(id=>['>=',['index-of',`,${id},`,['get','layerIds']],0])]:true
+for(const mode of ['none','vector','raster']) {
+  const sources={nodes:{type:'geojson',data:points}}, layers=[{id:'background',type:'background',paint:{'background-color':'#eaf1f5'}}]
+  if(mode==='none') {
+    sources.cables={type:'geojson',data:objects,promoteId:'objectId',maxzoom:24,tolerance:0}
+    layers.push(...cableLayers('cables').map(layer=>({...layer,filter:['all',layer.filter,['<=',['get','min_zoom'],['zoom']],thematic()]})))
+  } else if(mode==='vector') {
+    sources.cables={type:'vector',tiles:[`${location.origin}/vector/{z}/{x}/{y}.pbf`],minzoom:1,maxzoom:metadata.vectorMaxzoom,promoteId:'objectId'}
+    layers.push(...cableTileLayers('cables',layerIds))
+  } else {
+    const suffix=devicePixelRatio>1?'@2x':''
+    sources.cables={type:'raster',tiles:[`${location.origin}/raster/{z}/{x}/{y}${suffix}.webp`],tileSize:256,minzoom:1,maxzoom:metadata.rasterMaxzoom}
+    layers.push({id:'cable-raster',type:'raster',source:'cables',paint:{'raster-fade-duration':0,'raster-resampling':'linear'}})
+  }
+  layers.push({id:'nodes',type:'circle',source:'nodes',paint:{'circle-color':'#bc39ce','circle-radius':7,'circle-stroke-color':'white','circle-stroke-width':2}})
+  const map=maps[mode]=new maplibregl.Map({container:mode,style:{version:8,sources,layers},center:[37.004,55],zoom:14,maxZoom:18,attributionControl:false,preserveDrawingBuffer:true,fadeDuration:0})
+  map.on('error',event=>errors.push({mode,message:String(event.error)}))
+}
+async function settled() {
+  const start=performance.now()
+  while(Object.values(maps).some(map=>!map.loaded())) {
+    if(performance.now()-start>30000) throw new Error('Map load timeout')
+    await new Promise(resolve=>setTimeout(resolve,30))
+  }
+  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))
+}
+window.prototype={maps,errors,metadata,
+  async view(zoom,center=[37.004,55]) {
+    Object.values(maps).forEach(map=>map.jumpTo({zoom,center}));await settled();return this.snapshot()
+  },
+  async theme(ids) {
+    layerIds=ids
+    cableTileLayers('cables',ids).forEach(layer=>maps.vector.setFilter(layer.id,layer.filter))
+    cableLayers('cables').forEach(layer=>maps.none.setFilter(layer.id,['all',layer.filter,['<=',['get','min_zoom'],['zoom']],thematic()]))
+    await settled();return this.snapshot()
+  },
+  snapshot() {
+    return {dpr:devicePixelRatio,errors,views:Object.fromEntries(Object.entries(maps).map(([mode,map])=>[mode,{
+      zoom:map.getZoom(),source:map.getStyle().sources.cables,layerOrder:map.getStyle().layers.map(l=>l.id),
+      ids:[...new Set(map.queryRenderedFeatures().filter(f=>f.layer.id!=='nodes').map(f=>f.properties.objectId).filter(Boolean))].sort(),
+      topAtNode:map.queryRenderedFeatures(map.project([37,55]))[0]?.layer.id,
+    }]))}
+  }
+}
+await settled();window.prototype.ready=true;document.querySelector('#status').textContent='Готово'
+document.querySelector('#native').onclick=()=>window.prototype.view(14)
+document.querySelector('#overzoom').onclick=()=>window.prototype.view(18,[37.000505,54.9995])
+document.querySelector('#theme').onclick=()=>window.prototype.theme(layerIds.length?[]:[1])
+</script>

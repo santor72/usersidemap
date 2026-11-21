@@ -1,0 +1,31 @@
+groups:
+  - name: map-tiles
+    rules:
+      - alert: MapTilesBehind
+        expr: map_tiles_lag_seconds > scalar(map_tiles_lag_grace_seconds)
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Cable tiles lag behind the source snapshot'
+          description: 'Map {{ $labels.map_id }} / {{ $labels.format }} requires a manual bake and publish.'
+      - alert: MapTilesBuildFailed
+        expr: map_tiles_latest_build_failed == 1
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Latest cable tile build failed or was interrupted'
+          description: 'Map {{ $labels.map_id }} / {{ $labels.format }}: inspect the worker report; no grace period applies.'
+      - alert: MapTilesCleanupPending
+        expr: map_tiles_cleanup_pending > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Cable tile cleanup remains pending'
+      - alert: MapTilesRedisUnavailable
+        expr: (map_tiles_redis_up == 0) and (map_tiles_redis_enabled == 1)
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Tile status cache is unavailable; API uses PostgreSQL'

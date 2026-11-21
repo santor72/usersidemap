@@ -1,0 +1,29 @@
+{
+  "name": "userside-map-frontend",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "^22.19.0 || ^24.11.0 || >=26.0.0"
+  },
+  "scripts": {
+    "dev": "nuxt dev --host 0.0.0.0",
+    "build": "nuxt build",
+    "typecheck": "nuxt typecheck",
+    "test": "vitest run",
+    "preview": "nuxt preview --host 0.0.0.0"
+  },
+  "dependencies": {
+    "@fontsource/noto-sans": "5.3.0",
+    "lucide-static": "1.52.0",
+    "maplibre-gl": "6.12.0",
+    "vue": "^3.5.22"
+  },
+  "devDependencies": {
+    "@types/geojson": "7946.0.16",
+    "@types/node": "^24.19.1",
+    "nuxt": "4.5.2",
+    "typescript": "^5.9.3",
+    "vitest": "5.0.3",
+    "vue-tsc": "^3.3.12"
+  }
+}

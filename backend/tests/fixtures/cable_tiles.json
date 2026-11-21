@@ -1,0 +1,336 @@
+{
+  "bbox": [
+    36.9,
+    54.9,
+    37.1,
+    55.1
+  ],
+  "features": [
+    {
+      "source_kind": "cable",
+      "source_id": 1,
+      "object_type": "cable_line",
+      "min_zoom": 14,
+      "hidden": false,
+      "properties": {
+        "isBackbone": false,
+        "cableTypeId": 1
+      },
+      "layer_ids": [
+        1
+      ],
+      "style": {
+        "color": "#000080",
+        "width": 5
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            37.0005,
+            54.9995
+          ],
+          [
+            37.00051,
+            54.9995
+          ]
+        ]
+      }
+    },
+    {
+      "source_kind": "cable",
+      "source_id": 2,
+      "object_type": "cable_line",
+      "min_zoom": 1,
+      "hidden": false,
+      "properties": {
+        "isBackbone": true,
+        "cableTypeId": 1
+      },
+      "layer_ids": [
+        11
+      ],
+      "style": {
+        "color": "#000080",
+        "width": 5
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            36.98,
+            55
+          ],
+          [
+            37.03,
+            55
+          ]
+        ]
+      }
+    },
+    {
+      "source_kind": "cable",
+      "source_id": 3,
+      "object_type": "cable_line",
+      "min_zoom": 1,
+      "hidden": false,
+      "properties": {
+        "cableTypeIds": [
+          "1"
+        ],
+        "isBackbone": false
+      },
+      "layer_ids": [
+        1,
+        11
+      ],
+      "style": {
+        "color": "#ff0000",
+        "width": 3,
+        "dashArray": "20,15"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            37,
+            54.99
+          ],
+          [
+            37,
+            55.01
+          ]
+        ]
+      }
+    },
+    {
+      "source_kind": "cable",
+      "source_id": 4,
+      "object_type": "cable_line",
+      "min_zoom": 1,
+      "hidden": true,
+      "properties": {
+        "isBackbone": false,
+        "cableTypeId": 1
+      },
+      "layer_ids": [
+        1
+      ],
+      "style": {
+        "color": "#000080",
+        "width": 5
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            37.01,
+            54.99
+          ],
+          [
+            37.01,
+            55.01
+          ]
+        ]
+      }
+    },
+    {
+      "source_kind": "cable_group",
+      "source_id": 5,
+      "object_type": "cable_line",
+      "min_zoom": 1,
+      "hidden": false,
+      "properties": {
+        "cableTypeIds": [
+          "1",
+          "2"
+        ],
+        "isBackbone": false
+      },
+      "layer_ids": [
+        1,
+        11
+      ],
+      "style": {
+        "color": "#848284",
+        "width": 5,
+        "dashArray": "1,10"
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              37,
+              55
+            ],
+            [
+              37.001,
+              55
+            ]
+          ],
+          [
+            [
+              37.002,
+              55
+            ],
+            [
+              37.003,
+              55
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "source_kind": "cable",
+      "source_id": 6,
+      "object_type": "cable_line",
+      "min_zoom": 1,
+      "hidden": false,
+      "properties": {
+        "isBackbone": false,
+        "cableTypeId": 2
+      },
+      "layer_ids": [
+        1
+      ],
+      "style": {
+        "color": "#000080",
+        "width": 5
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            37.02,
+            55
+          ],
+          [
+            37.021,
+            55
+          ]
+        ]
+      }
+    },
+    {
+      "source_kind": "cable",
+      "source_id": 7,
+      "object_type": "cable_line",
+      "min_zoom": 14,
+      "hidden": false,
+      "properties": {
+        "cableTypeIds": [
+          "1"
+        ],
+        "isBackbone": false
+      },
+      "layer_ids": [],
+      "style": {
+        "color": "#000080",
+        "width": 5
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            37.001853125,
+            55
+          ],
+          [
+            37.002053125,
+            55
+          ]
+        ]
+      }
+    },
+    {
+      "source_kind": "cable",
+      "source_id": 8,
+      "object_type": "cable_line",
+      "min_zoom": 14,
+      "hidden": false,
+      "properties": {
+        "cableTypeIds": [
+          "1"
+        ],
+        "isBackbone": false
+      },
+      "layer_ids": [],
+      "style": {
+        "color": "#000080",
+        "width": 5
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            179.99,
+            0
+          ],
+          [
+            -179.99,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "source_kind": "cable",
+      "source_id": 9,
+      "object_type": "cable_line",
+      "min_zoom": 14,
+      "hidden": false,
+      "properties": {
+        "cableTypeIds": [
+          "1"
+        ],
+        "isBackbone": false
+      },
+      "layer_ids": [],
+      "style": {
+        "color": "#000080",
+        "width": 5
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            0,
+            85.05
+          ],
+          [
+            0.001,
+            85.06
+          ]
+        ]
+      }
+    }
+  ],
+  "expectedNonSpatial": {
+    "z13": [
+      "cable:2",
+      "cable:3",
+      "cable_group:5"
+    ],
+    "z14": [
+      "cable:1",
+      "cable:2",
+      "cable:3",
+      "cable_group:5",
+      "cable:7",
+      "cable:8",
+      "cable:9"
+    ],
+    "z14layer1": [
+      "cable:1",
+      "cable:3",
+      "cable_group:5"
+    ],
+    "z14layer11": [
+      "cable:2",
+      "cable:3",
+      "cable_group:5"
+    ]
+  }
+}

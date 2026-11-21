@@ -1,0 +1,349 @@
+name: userside-map
+
+x-app: &app
+  image: userside-map:${MAP_IMAGE_TAG:-local}
+  build:
+    context: .
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+
+x-worker: &worker
+  image: userside-map-tiles:${MAP_IMAGE_TAG:-local}
+  build:
+    context: .
+    target: tiles-worker
+  init: true
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  profiles: [tools]
+  restart: "no"
+  cpus: 2
+  mem_limit: 1g
+  depends_on:
+    seaweedfs:
+      condition: service_healthy
+    db:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
+
+x-worker-env: &worker-env
+  TILES_ROOT: /tiles
+  TILES_STORAGE: ${TILES_STORAGE:-s3}
+  TILES_S3_ENDPOINT: http://seaweedfs:8333
+  TILES_S3_BUCKET: ${TILES_S3_BUCKET:-map-tiles}
+  TILES_S3_ACCESS_KEY: ${TILES_S3_WORKER_ACCESS_KEY:?Set worker S3 access key}
+  TILES_S3_SECRET_KEY: ${TILES_S3_WORKER_SECRET_KEY:?Set worker S3 secret key}
+  US_SOURCE_SYSTEM: ${US_SOURCE_SYSTEM:-userside}
+  US_MAP_ID: ${US_MAP_ID:-3}
+  TILES_MINZOOM: ${TILES_MINZOOM:-1}
+  TILES_VECTOR_MAXZOOM: ${TILES_VECTOR_MAXZOOM:-14}
+  TILES_RASTER_PREBAKE_MAX: ${TILES_RASTER_PREBAKE_MAX:-19}
+  TILES_DISPLAY_MAXZOOM: ${TILES_DISPLAY_MAXZOOM:-18}
+  TILES_CONCURRENCY: ${TILES_CONCURRENCY:-2}
+  TILES_TASKS_PER_PROCESS: ${TILES_TASKS_PER_PROCESS:-256}
+  TILES_CABLE_TYPE_IDS: ${TILES_CABLE_TYPE_IDS:-1}
+  MAP_REDIS_URL: redis://redis:6379/0
+
+services:
+  storage-init:
+    image: python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
+    user: "10001:10001"
+    init: true
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    entrypoint: [python, /setup.py]
+    command: []
+    restart: "no"
+    volumes:
+      - ./tiles/seaweedfs-config:/config
+      - ./deploy/storage_setup.py:/setup.py:ro
+    environment:
+      TILES_S3_BUCKET: ${TILES_S3_BUCKET:-map-tiles}
+      TILES_S3_WORKER_ACCESS_KEY: ${TILES_S3_WORKER_ACCESS_KEY:?Set worker S3 access key}
+      TILES_S3_WORKER_SECRET_KEY: ${TILES_S3_WORKER_SECRET_KEY:?Set worker S3 secret key}
+      TILES_S3_API_ACCESS_KEY: ${TILES_S3_API_ACCESS_KEY:?Set API S3 access key}
+      TILES_S3_API_SECRET_KEY: ${TILES_S3_API_SECRET_KEY:?Set API S3 secret key}
+
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
+    user: "10001:10001"
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 45s
+    command:
+      - mini
+      - -dir=/data
+      - -ip=seaweedfs
+      - -ip.bind=0.0.0.0
+      - -s3.config=/config/s3.json
+      - -s3.iam.readOnly=true
+      - -bucket=${TILES_S3_BUCKET:-map-tiles}
+      - -master.volumeSizeLimitMB=${SEAWEED_VOLUME_SIZE_MB:-128}
+      - -volume.max=${SEAWEED_VOLUME_MAX:-32}
+      - -admin.ui=false
+      - -webdav=false
+      - -s3.port.iceberg=0
+    volumes:
+      - ./tiles/seaweedfs:/data
+      - ./tiles/seaweedfs-config:/config:ro
+    depends_on:
+      storage-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD-SHELL, "wget -q -O /dev/null http://127.0.0.1:9333/cluster/status && wget -q -O /dev/null http://127.0.0.1:8333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  redis:
+    image: redis:7.4-alpine
+    user: "999:999"
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/data]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    command: [redis-server, --save, "", --appendonly, "no", --maxmemory, 64mb, --maxmemory-policy, allkeys-lru]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  db:
+    image: postgis/postgis:16-3.5
+    platform: linux/amd64
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: map
+      POSTGRES_USER: map
+      POSTGRES_PASSWORD: ${MAP_DB_PASSWORD:?Set MAP_DB_PASSWORD}
+    volumes:
+      - map_postgis:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U map -d map"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  migrate:
+    <<: *app
+    command: [init]
+    restart: "no"
+    environment:
+      MAP_DB_PASSWORD: ${MAP_DB_PASSWORD:?Set MAP_DB_PASSWORD}
+      MAP_API_DB_PASSWORD: ${MAP_API_DB_PASSWORD:?Set MAP_API_DB_PASSWORD}
+      MAP_TILES_VECTOR_DB_PASSWORD: ${MAP_TILES_VECTOR_DB_PASSWORD:-}
+      MAP_TILES_RASTER_DB_PASSWORD: ${MAP_TILES_RASTER_DB_PASSWORD:-}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    restart: unless-stopped
+    environment:
+      MAP_API_DB_PASSWORD: ${MAP_API_DB_PASSWORD:?Set MAP_API_DB_PASSWORD}
+      MAP_API_SOURCE_SYSTEM: ${US_SOURCE_SYSTEM:-userside}
+      MAP_API_VISIBLE_CABLE_TYPE_IDS: ${MAP_API_VISIBLE_CABLE_TYPE_IDS:-1}
+      MAP_API_CORS_ORIGINS: ${MAP_API_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      MAP_API_POOL_MIN: ${MAP_API_POOL_MIN:-1}
+      MAP_API_POOL_MAX: ${MAP_API_POOL_MAX:-10}
+      MAP_API_POOL_TIMEOUT: ${MAP_API_POOL_TIMEOUT:-5}
+      MAP_API_CONNECT_TIMEOUT_SECONDS: ${MAP_API_CONNECT_TIMEOUT_SECONDS:-10}
+      MAP_API_STATEMENT_TIMEOUT_MS: ${MAP_API_STATEMENT_TIMEOUT_MS:-30000}
+      MAP_API_LOCK_TIMEOUT_MS: ${MAP_API_LOCK_TIMEOUT_MS:-5000}
+      MAP_API_TTL_SECONDS: ${MAP_API_TTL_SECONDS:-600}
+      MAP_API_PRELOAD_TIMEOUT_SECONDS: ${MAP_API_PRELOAD_TIMEOUT_SECONDS:-120}
+      MAP_API_MAX_OBJECTS: ${MAP_API_MAX_OBJECTS:-100000}
+      MAP_API_MAX_VERTICES: ${MAP_API_MAX_VERTICES:-2000000}
+      MAP_API_HARD_VERTICES: ${MAP_API_HARD_VERTICES:-100000}
+      MAP_API_BATCH_OBJECTS: ${MAP_API_BATCH_OBJECTS:-100}
+      MAP_API_BATCH_VERTICES: ${MAP_API_BATCH_VERTICES:-5000}
+      TILES_ROOT: /tiles
+      TILES_STORAGE: ${TILES_STORAGE:-s3}
+      TILES_S3_ENDPOINT: http://seaweedfs:8333
+      TILES_S3_BUCKET: ${TILES_S3_BUCKET:-map-tiles}
+      TILES_S3_ACCESS_KEY: ${TILES_S3_API_ACCESS_KEY:?Set API S3 access key}
+      TILES_S3_SECRET_KEY: ${TILES_S3_API_SECRET_KEY:?Set API S3 secret key}
+      TILES_PUBLIC_BASE_URL: ${TILES_PUBLIC_BASE_URL:-http://localhost:8000}
+      TILES_XYZ_SIGNING: ${TILES_XYZ_SIGNING:-none}
+      TILES_HMAC_SECRET: ${TILES_HMAC_SECRET:-}
+      TILES_SIGNATURE_TTL_SECONDS: ${TILES_SIGNATURE_TTL_SECONDS:-86400}
+      TILES_VERSION_STATUS_TTL_SECONDS: ${TILES_VERSION_STATUS_TTL_SECONDS:-30}
+      TILES_LAG: ${TILES_LAG:-banner}
+      TILES_CATALOG_POLL_SECONDS: ${TILES_CATALOG_POLL_SECONDS:-0}
+      TILES_LAG_GRACE_SECONDS: ${TILES_LAG_GRACE_SECONDS:-210}
+      MAP_REDIS_URL: redis://redis:6379/0
+    ports:
+      - "${MAP_API_BIND:-127.0.0.1}:${MAP_API_PORT:-8000}:8000"
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    stop_grace_period: 30s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: userside-map-frontend:${MAP_IMAGE_TAG:-local}
+    init: true
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    environment:
+      NUXT_PUBLIC_MAP_API_BASE: ${NUXT_PUBLIC_MAP_API_BASE:-/api/map}
+      NUXT_PUBLIC_MAP_ID: ${NUXT_PUBLIC_MAP_ID:-3}
+      NUXT_PUBLIC_MAP_LONGITUDE: ${NUXT_PUBLIC_MAP_LONGITUDE:-37.664}
+      NUXT_PUBLIC_MAP_LATITUDE: ${NUXT_PUBLIC_MAP_LATITUDE:-55.76005}
+      NUXT_PUBLIC_MAP_ZOOM: ${NUXT_PUBLIC_MAP_ZOOM:-15}
+      NUXT_PUBLIC_MAP_ICON_BASE_SIZE: ${NUXT_PUBLIC_MAP_ICON_BASE_SIZE:-24}
+      NUXT_PUBLIC_MAP_ICON_MIN_ZOOM: ${NUXT_PUBLIC_MAP_ICON_MIN_ZOOM:-15}
+      NUXT_PUBLIC_MAP_LABEL_MIN_ZOOM: ${NUXT_PUBLIC_MAP_LABEL_MIN_ZOOM:-16}
+      NUXT_PUBLIC_MAP_TILES_URL: ${NUXT_PUBLIC_MAP_TILES_URL:-https://tile2.maps.2gis.com/tiles?x={x}&y={y}&z={z}}
+      NUXT_PUBLIC_MAP_ATTRIBUTION: ${NUXT_PUBLIC_MAP_ATTRIBUTION:-© 2GIS}
+      NUXT_MAP_API_INTERNAL_URL: ${MAP_API_INTERNAL_URL:-http://api:8000}
+      NUXT_PUBLIC_CABLE_TILES: ${NUXT_PUBLIC_CABLE_TILES:-${CABLE_TILES:-none}}
+      NUXT_MAP_TILES_TOKEN: ${NUXT_MAP_TILES_TOKEN:-}
+    ports:
+      - "${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  jobs:
+    <<: *app
+    user: "${SYNC_REPORT_UID:-10001}:${SYNC_REPORT_GID:-10001}"
+    volumes:
+      - type: bind
+        source: ${SYNC_REPORT_DIR:-./reports/sync}
+        target: /reports
+    profiles: [tools]
+    command: [sync]
+    restart: "no"
+    environment:
+      MAP_DB_PASSWORD: ${MAP_DB_PASSWORD:?Set MAP_DB_PASSWORD}
+      US_DB_HOST: ${US_DB_HOST:-}
+      US_DB_PORT: ${US_DB_PORT:-5432}
+      US_DB_NAME: ${US_DB_NAME:-}
+      US_DB_USER: ${US_DB_USER:-}
+      US_DB_PASS: ${US_DB_PASS:-}
+      US_MAP_ID: ${US_MAP_ID:-3}
+      US_SOURCE_SYSTEM: ${US_SOURCE_SYSTEM:-userside}
+      US_COORD_AXES: ${US_COORD_AXES:-lat_lon}
+      SYNC_BATCH_SIZE: ${SYNC_BATCH_SIZE:-500}
+      US_CABLE_GROUP_ERROR_POLICY: ${US_CABLE_GROUP_ERROR_POLICY:-bridge}
+      SYNC_INVALID_OBJECTS: ${SYNC_INVALID_OBJECTS:-skip}
+      SYNC_REPORT_DIR: /reports
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  tiles-vector:
+    <<: *worker
+    command: [vector]
+    environment:
+      <<: *worker-env
+      MAP_TILES_FORMAT: vector
+      MAP_TILES_VECTOR_DB_PASSWORD: ${MAP_TILES_VECTOR_DB_PASSWORD:-}
+
+  update-worker:
+    <<: *worker
+    image: userside-map-update:${MAP_IMAGE_TAG:-local}
+    build:
+      context: .
+      target: update-worker
+    command: []
+    stop_grace_period: 45s
+    volumes:
+      - map_updates:/updates
+    environment:
+      <<: *worker-env
+      MAP_DB_PASSWORD: ${MAP_DB_PASSWORD:?Set MAP_DB_PASSWORD}
+      MAP_TILES_VECTOR_DB_PASSWORD: ${MAP_TILES_VECTOR_DB_PASSWORD:-}
+      MAP_TILES_RASTER_DB_PASSWORD: ${MAP_TILES_RASTER_DB_PASSWORD:-}
+      US_DB_HOST: ${US_DB_HOST:-}
+      US_DB_PORT: ${US_DB_PORT:-5432}
+      US_DB_NAME: ${US_DB_NAME:-}
+      US_DB_USER: ${US_DB_USER:-}
+      US_DB_PASS: ${US_DB_PASS:-}
+      US_COORD_AXES: ${US_COORD_AXES:-lat_lon}
+      SYNC_BATCH_SIZE: ${SYNC_BATCH_SIZE:-500}
+      US_CABLE_GROUP_ERROR_POLICY: ${US_CABLE_GROUP_ERROR_POLICY:-bridge}
+      SYNC_INVALID_OBJECTS: ${SYNC_INVALID_OBJECTS:-skip}
+
+  tiles-raster:
+    <<: *worker
+    command: [raster]
+    environment:
+      <<: *worker-env
+      MAP_TILES_FORMAT: raster
+      MAP_TILES_RASTER_DB_PASSWORD: ${MAP_TILES_RASTER_DB_PASSWORD:-}
+
+  token-admin:
+    <<: *app
+    profiles: [tools]
+    command: [tokens, list]
+    restart: "no"
+    environment:
+      MAP_DB_PASSWORD: ${MAP_DB_PASSWORD:?Set MAP_DB_PASSWORD}
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: [monitoring]
+    read_only: true
+    tmpfs: ["/prometheus:uid=65534,gid=65534,mode=0700"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/tile-alerts.yml:/etc/prometheus/tile-alerts.yml:ro
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  map_postgis:
+  map_updates:

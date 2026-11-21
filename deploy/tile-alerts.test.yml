@@ -1,0 +1,49 @@
+rule_files:
+  - tile-alerts.yml
+evaluation_interval: 15s
+tests:
+  - name: lag-grace-and-recovery
+    interval: 1m
+    input_series:
+      - series: map_tiles_lag_grace_seconds
+        values: '210 210 210 210 210 210'
+      - series: 'map_tiles_lag_seconds{source_system="userside",map_id="3",format="vector"}'
+        values: '0 60 120 180 240 0'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: MapTilesBehind
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: MapTilesBehind
+        exp_alerts:
+          - exp_labels:
+              source_system: userside
+              map_id: '3'
+              format: vector
+              severity: warning
+            exp_annotations:
+              summary: Cable tiles lag behind the source snapshot
+              description: Map 3 / vector requires a manual bake and publish.
+      - eval_time: 5m
+        alertname: MapTilesBehind
+        exp_alerts: []
+  - name: failure-is-immediate
+    interval: 15s
+    input_series:
+      - series: 'map_tiles_latest_build_failed{source_system="userside",map_id="3",format="raster"}'
+        values: '1 0'
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: MapTilesBuildFailed
+        exp_alerts:
+          - exp_labels:
+              source_system: userside
+              map_id: '3'
+              format: raster
+              severity: critical
+            exp_annotations:
+              summary: Latest cable tile build failed or was interrupted
+              description: 'Map 3 / raster: inspect the worker report; no grace period applies.'
+      - eval_time: 15s
+        alertname: MapTilesBuildFailed
+        exp_alerts: []
